@@ -1,4 +1,4 @@
-package main
+package digibyte
 
 import (
 	"bytes"
@@ -12,9 +12,16 @@ import (
 )
 
 type Client interface {
+
+	SetFee(fee float64) (bool, error)
 	CreateAddress() (string, error)
 	GetBalance() (float64, error)
 	GetWalletInfo() (*BtcWalletInfo, error)
+	GetBalanceByAddress(address string) (float64, error)
+	SendToAddress(address string, amount float64) (string, error)
+	GetTransaction(txid string) (map[string]interface{}, error)
+	CheckTransaction(txid string) (bool, error)
+
 }
 
 type RequestData struct {
@@ -228,6 +235,132 @@ func (b *btcClient) GetWalletInfo() (*BtcWalletInfo, error) {
 	return nil, BtcError{Code: 500, Message: "No result"}
 }
 
+
+func (b *btcClient) CheckTransaction(txid string) (bool, error) {
+	params := []interface{}{txid}
+	req, e := json.Marshal(RequestData{Jsonrpc: "2.0", Method: "gettransaction", Params: params})
+	if e != nil {
+		return false, e
+	}
+
+	resp, err := b.sendRequest(req)
+	if err != nil {
+		return false, err
+	}
+	if val, ok := resp["result"]; ok {
+		if result, ok := val.(map[string]interface{}); ok {
+			//log.Println("transaction result", result)
+			if val, ok := result["confirmations"]; ok {
+				var res int64
+				if reflect.TypeOf(val).Name() == "string" {
+					res, _ = strconv.ParseInt(val.(string), 10, 64)
+				} else {
+					res = int64(val.(float64))
+				}
+				return res >= b.Confirmations, nil
+			}
+		}
+	}
+
+	return false, BtcError{Code: 500, Message: "No result"}
+}
+
+
+func (b *btcClient) GetBalanceByAddress(address string) (float64, error) {
+	type BalanceRequestData struct {
+		Jsonrpc string        `json:"jsonrpc"`
+		Method  string        `json:"method"`
+		Params  []interface{} `json:"params"`
+	}
+	params := []interface{}{}
+	params = append(params, address, b.Confirmations)
+	req, e := json.Marshal(BalanceRequestData{Jsonrpc: "2.0", Method: "getreceivedbyaddress", Params: params})
+	if e != nil {
+		return 0, e
+	}
+
+	resp, err := b.sendRequest(req)
+	if err != nil {
+		return 0, err
+	}
+	if val, ok := resp["result"]; ok {
+		var res float64
+		if reflect.TypeOf(val).Name() == "string" {
+			res, _ = strconv.ParseFloat(val.(string), 64)
+		} else {
+			res = val.(float64)
+		}
+		return res, nil
+	}
+
+	return 0, BtcError{Code: 500, Message: "No result"}
+}
+
+func (b *btcClient) SendToAddress(address string, amount float64) (string, error) {
+	params := []interface{}{address, strconv.FormatFloat(amount, 'f', -1, 64)}
+	req, e := json.Marshal(RequestData{Jsonrpc: "2.0", Method: "sendtoaddress", Params: params})
+	if e != nil {
+		return "", e
+	}
+	//log.Println("request", string(req))
+	resp, err := b.sendRequest(req)
+	if err != nil {
+		return "", err
+	}
+	if val, ok := resp["result"]; ok {
+		if res, ok := val.(string); ok {
+			return res, nil
+		}
+	}
+
+	return "", BtcError{Code: 500, Message: "No result"}
+}
+
+func (b *btcClient) GetTransaction(txid string) (map[string]interface{}, error) {
+	params := []interface{}{txid}
+	req, e := json.Marshal(RequestData{Jsonrpc: "2.0", Method: "gettransaction", Params: params})
+	if e != nil {
+		return nil, e
+	}
+
+	resp, err := b.sendRequest(req)
+	if err != nil {
+		return nil, err
+	}
+
+	result := map[string]interface{}{}
+	if val, ok := resp["result"]; ok {
+		result = val.(map[string]interface{})
+	}
+	return result, nil
+}
+
+func (b *btcClient) SetFee(fee float64) (bool, error) {
+	params := []interface{}{fee}
+	req, e := json.Marshal(RequestData{
+		Jsonrpc: "2.0",
+		Method:  "settxfee",
+		Params:  params,
+	})
+	if e != nil {
+		return false, e
+	}
+	//log.Println("request", string(req))
+
+	resp, err := b.sendRequest(req)
+	if err != nil {
+		return false, err
+	}
+	if val, ok := resp["result"]; ok {
+		if res, ok := val.(bool); ok {
+			return res, nil
+		}
+	}
+
+	return false, BtcError{Code: 500, Message: "No result"}
+}
+
+
 var DigiByte = NewClient("http://a:b@localhost:14022/",6);
 
 func TestCreateAddress(t *testing.T) {
@@ -257,4 +390,51 @@ func TestGetWalletInfo(t *testing.T) {
      t.FailNow()
   }
   t.Logf("getWalletInfo result: %+v", resp)
+}
+
+func TestGetBalanceByAddress(t *testing.T) {
+  resp, err := DigiByte.GetBalanceByAddress("DNTpSCCtoUExDZocboGYw9LAdQxedSm11n")
+  if err != nil {
+     t.Errorf("getBalanceByAddress error: %+v", err)
+     t.FailNow()
+  }
+  t.Logf("getBalanceByAddress result: %v", resp)
+}
+
+func TestSendToAddress(t *testing.T) {
+
+  addr := "DNTpSCCtoUExDZocboGYw9LAdQxedSm11n"
+  resp, err := DigiByte.SendToAddress(addr, 0.00001)
+  if err != nil {
+     t.Errorf("sendToAddress error: %+v", err)
+     t.FailNow()
+  }
+  t.Logf("sendToAddress result: %v", resp)
+}
+
+func TestGetTransaction(t *testing.T) {
+  resp, err := DigiByte.GetTransaction("df5cae215feb9f135b94466dcd937ee303f95cdc095cc0aa688d86e3ec25f21b")
+  if err != nil {
+     t.Errorf("getTransaction error: %+v", err)
+     t.FailNow()
+  }
+  t.Logf("getTransaction result: %v", resp)
+}
+
+func TestCheckTransaction(t *testing.T) {
+  resp, err := DigiByte.CheckTransaction("df5cae215feb9f135b94466dcd937ee303f95cdc095cc0aa688d86e3ec25f21b")
+  if err != nil {
+     t.Errorf("getTransaction error: %+v", err)
+     t.FailNow()
+  }
+  t.Logf("getTransaction result: %v", resp)
+}
+
+func TestSetFee(t *testing.T) {
+  resp, err := DigiByte.SetFee(40 * 1024 * 0.00000001)
+  if err != nil {
+     t.Errorf("setFee error: %+v", err)
+     t.FailNow()
+  }
+  t.Logf("setFee result: %v", resp)
 }
